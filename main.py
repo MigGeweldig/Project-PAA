@@ -1,233 +1,463 @@
 import pygame
 import random
-import tkinter as tk
-from tkinter import filedialog
 import math
 import heapq
 
-# Inisialisasi Pygame
 pygame.init()
-WIDTH, HEIGHT = 1200, 800
-CELL_SIZE = 4
+
+WIDTH, HEIGHT = 1200, 750
+
+GRAY_RANGE = [(120, 120, 120)]
+GREEN_BORDER = (16, 172, 58)
+WHITE = (255, 255, 255)
+RED = (255, 0, 0)
+YELLOW = (255, 255, 0)
+BLACK = (0, 0, 0)
+GREEN = (0, 255, 0)
+BLUE = (0, 0, 255)
+
 screen = pygame.display.set_mode((WIDTH, HEIGHT))
 pygame.display.set_caption("Smart Courier Simulation")
 
-# Warna
-GRAY_RANGE = [(90, 90, 90), (150, 150, 150)]
-WHITE, BLACK, YELLOW, RED, GREEN, BLUE = (255, 255, 255), (0, 0, 0), (255, 255, 0), (255, 0, 0), (0, 255, 0), (0, 0, 255)
+# Variabel global
+map_image = None
+map_loaded = False
+map_files = ["map1.png", "map2.png", "map3.png", "map4.png", "map5.png"]
+last_map = None
+collision_map = []
+gray_pixels = []
+corridor_horizontal = True
+valid_y_range = (0, HEIGHT)
+valid_x_range = (0, WIDTH)
 
-# Utilitas
-def is_gray(color):
-    r, g, b = color
-    return all(GRAY_RANGE[0][i] <= c <= GRAY_RANGE[1][i] for i, c in enumerate((r, g, b)))
+def smooth_path(path):
+    if len(path) < 3:
+        return path
+    
+    smoothed = [path[0]]
+    for point in path[1:-1]:
+        last = smoothed[-1]
+        dx = point[0] - last[0]
+        dy = point[1] - last[1]
+        if abs(dx) + abs(dy) > 20:
+            smoothed.append(point)
+    smoothed.append(path[-1])
+    return smoothed
+
+def find_centroid(points):
+    if not points:
+        return None
+    total_x = sum(x for x, y in points)
+    total_y = sum(y for x, y in points)
+    return (total_x // len(points), total_y // len(points))
+
+def find_nearest_point(target, points):
+    min_dist = float('inf')
+    nearest = points[0]
+    for (x, y) in points:
+        dist = (x - target[0])**2 + (y - target[1])**2
+        if dist < min_dist:
+            min_dist = dist
+            nearest = (x, y)
+    return nearest
 
 def heuristic(a, b):
-    return abs(a[0] - b[0]) + abs(a[1] - b[1])
+    return math.hypot(a[0]-b[0], a[1]-b[1])
 
-# Tombol
-class Button:
-    def __init__(self, rect, color, text, font_size=30):
-        self.rect = pygame.Rect(rect)
-        self.color = color
-        self.text = text
-        self.font = pygame.font.Font(None, font_size)
+def a_star(start, goal, collision_map):
+    open_set = []
+    heapq.heappush(open_set, (0, start))
+    came_from = {}
+    g_score = {start: 0}
+    f_score = {start: heuristic(start, goal)}
 
-    def draw(self, surface):
-        pygame.draw.rect(surface, self.color, self.rect)
-        text_surf = self.font.render(self.text, True, BLACK)
-        surface.blit(text_surf, (self.rect.x + 10, self.rect.y + 10))
+    while open_set:
+        current = heapq.heappop(open_set)[1]
 
-    def is_clicked(self, pos):
-        return self.rect.collidepoint(pos)
+        if current == goal:
+            path = []
+            while current in came_from:
+                path.append(current)
+                current = came_from[current]
+            path.append(start)
+            path.reverse()
+            return smooth_path(path)
 
-# Map dan Grid
-class Map:
-    def __init__(self):
-        self.image = None
-        self.grid = []
-        self.loaded = False
-
-    def load(self):
-        root = tk.Tk()
-        root.withdraw()
-        path = filedialog.askopenfilename(filetypes=[("Images", ".png;.jpg;*.bmp")])
-        if not path: return
-
-        img = pygame.image.load(path)
-        w, h = img.get_width(), img.get_height()
-        if not (1000 <= w <= 1500 and 700 <= h <= 1000):
-            print(f"Gambar {w}x{h} tidak valid.")
-            return
-
-        self.image = pygame.transform.scale(img, (WIDTH, HEIGHT))
-        self.loaded = True
-        self.build_grid()
-
-    def build_grid(self):
-        self.grid = []
-        for y in range(0, HEIGHT, CELL_SIZE):
-            row = []
-            for x in range(0, WIDTH, CELL_SIZE):
-                color = self.image.get_at((x, y))[:3]
-                row.append(is_gray(color))
-            self.grid.append(row)
-
-    def draw(self):
-        if self.loaded:
-            screen.blit(self.image, (0, 0))
-
-    def get_random_gray(self):
-        for _ in range(1000):
-            x = random.randint(100, WIDTH - 100)
-            y = random.randint(100, HEIGHT - 100)
-            if is_gray(self.image.get_at((x, y))[:3]):
-                # Snap ke tengah sel grid
-                gx = (x // CELL_SIZE) * CELL_SIZE + CELL_SIZE // 2
-                gy = (y // CELL_SIZE) * CELL_SIZE + CELL_SIZE // 2
-                return (gx, gy)
-        # Default fallback
-        return (WIDTH // 2, HEIGHT // 2)
-
-
-# A* Pathfinder
-class Pathfinder:
-    def __init__(self, grid):
-        self.grid = grid
-
-    def find(self, start, goal):
-        start = (start[1] // CELL_SIZE, start[0] // CELL_SIZE)
-        goal = (goal[1] // CELL_SIZE, goal[0] // CELL_SIZE)
-
-        if not self.grid[start[0]][start[1]] or not self.grid[goal[0]][goal[1]]:
-            return []
-
-        open_set = [(0, start)]
-        came_from, g_score = {}, {start: 0}
-        f_score = {start: heuristic(start, goal)}
-
-        while open_set:
-            _, current = heapq.heappop(open_set)
-            if current == goal:
-                path = []
-                while current in came_from:
-                    path.append(current)
-                    current = came_from[current]
-                path.reverse()
-                return [(x * CELL_SIZE + CELL_SIZE // 2, y * CELL_SIZE + CELL_SIZE // 2) for y, x in path]
-
-            for dy, dx in [(-1,0),(1,0),(0,-1),(0,1)]:
-                ny, nx = current[0] + dy, current[1] + dx
-                neighbor = (ny, nx)
-                if 0 <= ny < len(self.grid) and 0 <= nx < len(self.grid[0]) and self.grid[ny][nx]:
-                    tentative_g = g_score[current] + 1
+        for dx, dy in [(-1,0),(1,0),(0,-1),(0,1), (-1,-1),(-1,1),(1,-1),(1,1)]:
+            neighbor = (current[0] + dx, current[1] + dy)
+            if 0 <= neighbor[0] < WIDTH and 0 <= neighbor[1] < HEIGHT:
+                if collision_map[neighbor[0]][neighbor[1]]:
+                    move_cost = 1.4 if abs(dx)+abs(dy)==2 else 1
+                    tentative_g = g_score[current] + move_cost
+                    
                     if neighbor not in g_score or tentative_g < g_score[neighbor]:
                         came_from[neighbor] = current
                         g_score[neighbor] = tentative_g
                         f_score[neighbor] = tentative_g + heuristic(neighbor, goal)
                         heapq.heappush(open_set, (f_score[neighbor], neighbor))
-        return []
+    return None
 
-# Kurir
+def load_map():
+    global map_image, map_loaded, last_map, collision_map, gray_pixels, corridor_horizontal, valid_y_range, valid_x_range
+    
+    if len(map_files) == 0:
+        print("Tidak ada peta tersedia!")
+        return
+
+    available_maps = [m for m in map_files if m != last_map]
+    if not available_maps:
+        available_maps = map_files
+
+    image_path = random.choice(available_maps)
+    
+    try:
+        map_image = pygame.image.load(image_path)
+        map_image = pygame.transform.scale(map_image, (WIDTH, HEIGHT))
+        map_loaded = True  
+        last_map = image_path
+        
+        green_pixels = []
+        gray_pixels_temp = []
+        for x in range(WIDTH):
+            for y in range(HEIGHT):
+                color = map_image.get_at((x, y))
+                rgb = (color.r, color.g, color.b)
+                if rgb == GREEN_BORDER:
+                    green_pixels.append((x, y))
+                elif rgb in GRAY_RANGE:
+                    gray_pixels_temp.append((x, y))
+        
+        forbidden_surface = pygame.Surface((WIDTH, HEIGHT))
+        forbidden_surface.fill(BLACK)
+        for (gx, gy) in green_pixels:
+            pygame.draw.circle(forbidden_surface, WHITE, (gx, gy), 28)
+        
+        gray_pixels = []
+        for (x, y) in gray_pixels_temp:
+            if forbidden_surface.get_at((x, y))[:3] == (0, 0, 0):
+                gray_pixels.append((x, y))
+        
+        if not gray_pixels:
+            print("Tidak ada area abu-abu valid yang tersedia!")
+            map_loaded = False
+            return
+        
+        min_x = min(p[0] for p in gray_pixels)
+        max_x = max(p[0] for p in gray_pixels)
+        min_y = min(p[1] for p in gray_pixels)
+        max_y = max(p[1] for p in gray_pixels)
+        width = max_x - min_x
+        height = max_y - min_y
+        corridor_horizontal = width > height
+        
+        if corridor_horizontal:
+            corridor_height = height
+            top_margin = (HEIGHT - corridor_height) // 2
+            valid_y_range = (top_margin, HEIGHT - top_margin)
+            gray_pixels = [ (x, y) for (x, y) in gray_pixels if valid_y_range[0] <= y <= valid_y_range[1] ]
+        else:
+            corridor_width = width
+            left_margin = (WIDTH - corridor_width) // 2
+            valid_x_range = (left_margin, WIDTH - left_margin)
+            gray_pixels = [ (x, y) for (x, y) in gray_pixels if valid_x_range[0] <= x <= valid_x_range[1] ]
+        
+        collision_map = [[False for _ in range(HEIGHT)] for _ in range(WIDTH)]
+        for (x, y) in gray_pixels:
+            collision_map[x][y] = True
+        
+        print(f"Peta {image_path} dimuat!")
+        print(f"Jumlah pixel abu-abu valid: {len(gray_pixels)}")
+        print(f"Orientasi koridor: {'Horizontal' if corridor_horizontal else 'Vertical'}")
+        print(f"Area valid: {valid_y_range if corridor_horizontal else valid_x_range}")
+
+        # Reset posisi kurir setelah load map
+        randomize_positions()
+        
+    except Exception as e:
+        print(f"Error: Tidak bisa memuat {image_path}")
+        print(e)
+
 class Courier:
     def __init__(self, x, y):
-        self.x, self.y = x, y
+        self.x = x
+        self.y = y
+        self.speed = 3
         self.path = []
-        self.target_index = 0
-        self.speed = 2
+        self.current_target_index = 0
+        self.moving = False
         self.angle = 0
-        self.image = self.create_image()
-
-    def create_image(self):
-        surface = pygame.Surface((50, 30), pygame.SRCALPHA)
-        pygame.draw.rect(surface, (60, 60, 60), (0, 5, 35, 20), border_radius=8)
-        pygame.draw.polygon(surface, RED, [(40, 15), (30, 5), (30, 25)])
-        return surface
-
-    def set_path(self, path):
-        self.path = path
-        self.target_index = 0
-
-    def update(self):
-        if self.target_index >= len(self.path): return
-        tx, ty = self.path[self.target_index]
-        dx, dy = tx - self.x, ty - self.y
-        dist = math.hypot(dx, dy)
-        if dist < 2:
-            self.target_index += 1
-            return
-        self.x += dx / dist * self.speed
-        self.y += dy / dist * self.speed
-        self.angle = math.degrees(math.atan2(dy, dx))
-
+        self.target_angle = 0
+        
+        # Buat surface lebih besar untuk kualitas rotasi yang lebih baik
+        self.image = pygame.Surface((60, 40), pygame.SRCALPHA)
+        
+        # Gambar segitiga dengan anti-aliasing
+        points = [
+            (5, 5),
+            (5, 35),
+            (55, 20)
+        ]
+        pygame.draw.polygon(self.image, BLACK, points)
+        pygame.draw.aalines(self.image, BLACK, True, points)  # Anti-aliased outline
+        
     def draw(self, surface):
-        rotated = pygame.transform.rotate(self.image, -self.angle)
-        rect = rotated.get_rect(center=(self.x, self.y))
-        surface.blit(rotated, rect)
+        # Gunakan rotozoom untuk kualitas rotasi lebih baik
+        rotated_image = pygame.transform.rotozoom(self.image, self.angle, 0.5)  # Scale down 50%
+        rect = rotated_image.get_rect(center=(self.x, self.y))
+        surface.blit(rotated_image, rect.topleft)
+        
+    def move_towards(self):
+        if not self.moving or self.current_target_index >= len(self.path):
+            return
 
-# Inisialisasi elemen
-map_obj = Map()
-courier = Courier(0, 0)
-source = destination = (0, 0)
-path = []
-running_sim = False
+        target = self.path[self.current_target_index]
+        
+        dx = target[0] - self.x
+        dy = target[1] - self.y
+        distance = math.hypot(dx, dy)
+        
+        if distance > 0:
+            move_x = (dx/distance) * self.speed
+            move_y = (dy/distance) * self.speed
+            
+            new_x = self.x + move_x
+            new_y = self.y + move_y
+            
+            # Smooth rotation dengan interpolasi sudut
+            target_angle = math.degrees(math.atan2(-dy, dx)) % 360
+            angle_diff = (target_angle - self.angle) % 360
+            if angle_diff > 180:
+                angle_diff -= 360
+            self.angle += angle_diff * 0.15  # Lebih halus
+            
+            # Snap progresif dengan interpolasi lebih smooth
+            if not collision_map[int(new_x)][int(new_y)]:
+                nearest = find_nearest_point((new_x, new_y), gray_pixels)
+                new_x = new_x * 0.85 + nearest[0] * 0.15
+                new_y = new_y * 0.85 + nearest[1] * 0.15
+                
+            self.x, self.y = new_x, new_y
+        
+        if distance < 5:
+            self.current_target_index += 1
+            if self.current_target_index >= len(self.path):
+                self.moving = False
+                self.x, self.y = int(round(self.x)), int(round(self.y))
 
-buttons = {
-    "load": Button((50, 50, 150, 50), GREEN, "Load Map"),
-    "random": Button((50, 120, 150, 50), BLUE, "Acak"),
-    "start": Button((50, 190, 150, 50), GREEN, "Start"),
-    "stop": Button((50, 260, 150, 50), RED, "Stop"),
-}
+def bresenham_line(start, end):
+    """Menghasilkan titik-titik integer di sepanjang garis dari start ke end menggunakan algoritma Bresenham."""
+    x0, y0 = start
+    x1, y1 = end
+    points = []
+    dx = abs(x1 - x0)
+    dy = abs(y1 - y0)
+    sx = 1 if x0 < x1 else -1
+    sy = 1 if y0 < y1 else -1
+    err = dx - dy
 
-# Main Loop
+    while True:
+        points.append((x0, y0))
+        if x0 == x1 and y0 == y1:
+            break
+        e2 = 2 * err
+        if e2 > -dy:
+            err -= dy
+            x0 += sx
+        if e2 < dx:
+            err += dx
+            y0 += sy
+    return points
+
+def get_valid_directions(source):
+    valid_angles = []
+    for angle in range(0, 360, 5):  # Cek setiap 5 derajat
+        rad = math.radians(angle)
+        dx = math.cos(rad)
+        dy = -math.sin(rad)  # Penyesuaian untuk sistem koordinat pygame
+        
+        end_x = int(source[0] + dx * 50)
+        end_y = int(source[1] + dy * 50)
+        
+        line_points = bresenham_line(source, (end_x, end_y))
+        
+        if len(line_points) < 50:
+            continue
+            
+        valid = True
+        for point in line_points[:50]:  # Cek 50 titik pertama
+            x, y = point
+            if x < 0 or x >= WIDTH or y < 0 or y >= HEIGHT:
+                valid = False
+                break
+            if not collision_map[x][y]:
+                valid = False
+                break
+                
+        if valid:
+            valid_angles.append(angle)
+            
+    return valid_angles
+
+def get_valid_directions(source):
+    """Mendapatkan arah valid berdasarkan orientasi koridor dan posisi source"""
+    valid_directions = []
+    
+    # Cek orientasi koridor
+    if corridor_horizontal:
+        # Untuk koridor horizontal, hanya boleh hadap kiri (180) atau kanan (0)
+        directions = [0, 180]
+    else:
+        # Untuk koridor vertical, hanya boleh hadap atas (90) atau bawah (270)
+        directions = [90, 270]
+    
+    # Cek setiap arah yang memungkinkan
+    for angle in directions:
+        valid = True
+        rad = math.radians(angle)
+        dx = math.cos(rad)
+        dy = -math.sin(rad)  # Adjust for pygame coordinate system
+        
+        # Cek 50 pixel ke depan
+        for i in range(1, 50):
+            x = int(source[0] + dx * i)
+            y = int(source[1] + dy * i)
+            
+            # Jika keluar dari area valid atau masuk green border
+            if not (0 <= x < WIDTH and 0 <= y < HEIGHT) or not collision_map[x][y]:
+                valid = False
+                break
+                
+        if valid:
+            valid_directions.append(angle)
+            
+    return valid_directions
+
+def randomize_positions():
+    global source, destination, courier, running_simulation
+    
+    if len(gray_pixels) < 2:
+        print("Tidak cukup area abu-abu valid untuk memilih posisi!")
+        return
+
+    MIN_DISTANCE = 750
+    max_attempts = 500
+
+    # Cari pasangan posisi yang valid
+    for _ in range(max_attempts):
+        source = random.choice(gray_pixels)
+        valid_directions = get_valid_directions(source)
+        
+        if not valid_directions:
+            continue
+            
+        # Cari tujuan yang sesuai
+        valid_destinations = []
+        for p in gray_pixels:
+            if p == source:
+                continue
+            dx = p[0] - source[0]
+            dy = p[1] - source[1]
+            if math.hypot(dx, dy) >= MIN_DISTANCE:
+                valid_destinations.append(p)
+        
+        if not valid_destinations:
+            continue
+            
+        destination = random.choice(valid_destinations)
+        
+        # Hitung sudut ke tujuan
+        target_dx = destination[0] - source[0]
+        target_dy = destination[1] - source[1]
+        target_angle = math.degrees(math.atan2(-target_dy, target_dx)) % 360
+        
+        # Pilih arah valid yang paling dekat dengan sudut tujuan
+        best_angle = min(valid_directions, 
+                         key=lambda x: min(abs(x - target_angle), 360 - abs(x - target_angle)))
+        
+        courier = Courier(*source)
+        courier.angle = best_angle
+        running_simulation = False
+        
+        print(f"Posisi diatur! Start: {source}, Finish: {destination}")
+        print(f"Jarak: {math.hypot(target_dx, target_dy):.1f} pixel")
+        print(f"Arah awal: {best_angle}°")
+        return
+    
+    print("Gagal menemukan posisi yang memenuhi syarat")
+    
+# GUI Elements
+source = (0, 0)
+destination = (0, 0)
+courier = Courier(*source)
+load_map_button = pygame.Rect(0, 0, 115, 40)
+random_button = pygame.Rect(0, 55, 115, 40)
+start_button = pygame.Rect(0, 110, 115, 40)
+stop_button = pygame.Rect(0, 165, 115, 40)
+running_simulation = False
+
 def game_loop():
-    global courier, source, destination, path, running_sim
-    clock = pygame.time.Clock()
+    global running_simulation
     running = True
-
     while running:
-        screen.fill(BLACK)
-        map_obj.draw()
+        screen.fill(GREEN_BORDER)
 
-        if map_obj.loaded:
+        if map_loaded and map_image:
+            screen.blit(map_image, (0, 0))
             pygame.draw.circle(screen, YELLOW, source, 10)
             pygame.draw.circle(screen, RED, destination, 10)
-            if running_sim:
-                courier.update()
+            
+            if running_simulation:
+                courier.move_towards()
+            
             courier.draw(screen)
 
-        for btn in buttons.values():
-            btn.draw(screen)
+        pygame.draw.rect(screen, YELLOW, load_map_button)
+        pygame.draw.rect(screen, BLUE, random_button)
+        pygame.draw.rect(screen, GREEN, start_button)
+        pygame.draw.rect(screen, RED, stop_button)
+        
+        font = pygame.font.Font(None, 28)  # Sesuaikan ukuran font agar proporsional
 
+        def center_text(text, button_rect, color):
+            text_surface = font.render(text, True, color)
+            text_rect = text_surface.get_rect(center=button_rect.center)
+            screen.blit(text_surface, text_rect)
+
+        # Render teks pada tombol dengan posisi yang sesuai
+        center_text("Load Map", load_map_button, BLACK)
+        center_text("Acak", random_button, WHITE)
+        center_text("Start", start_button, BLACK)
+        center_text("Stop", stop_button, BLACK)
+
+        
         pygame.display.flip()
-
+        
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 running = False
             elif event.type == pygame.MOUSEBUTTONDOWN:
-                pos = event.pos
-                if buttons["load"].is_clicked(pos):
-                    map_obj.load()
-                    running_sim = False
-                elif buttons["random"].is_clicked(pos) and map_obj.loaded:
-                    source = map_obj.get_random_gray()
-                    destination = map_obj.get_random_gray()
-                    courier = Courier(*source)
-                    pathfinder = Pathfinder(map_obj.grid)
-                    path = pathfinder.find(source, destination)
-                    courier.set_path([])
-                    running_sim = False
-                elif buttons["start"].is_clicked(pos) and map_obj.loaded:
-                    current_pos = (int(courier.x), int(courier.y))
-                    pathfinder = Pathfinder(map_obj.grid)
-                    new_path = pathfinder.find(current_pos, destination)
-                    if path:
-                        courier.set_path(new_path)
-                        running_sim = True
-                elif buttons["stop"].is_clicked(pos):
-                    running_sim = False
-
-        clock.tick(60)
-
-    pygame.quit()   
+                if load_map_button.collidepoint(event.pos):
+                    load_map()
+                elif random_button.collidepoint(event.pos) and map_loaded:
+                    randomize_positions()
+                elif start_button.collidepoint(event.pos) and map_loaded:
+                    start_pos = (int(courier.x), int(courier.y))
+                    goal_pos = destination
+                    if collision_map[start_pos[0]][start_pos[1]] and collision_map[goal_pos[0]][goal_pos[1]]:
+                        path = a_star(start_pos, goal_pos, collision_map)
+                        if path:
+                            courier.path = path
+                            courier.current_target_index = 0
+                            courier.moving = True
+                            running_simulation = True
+                        else:
+                            print("Tidak ada jalur yang tersedia!")
+                    else:
+                        print("Posisi awal/tujuan tidak valid!")
+                elif stop_button.collidepoint(event.pos) and map_loaded:
+                    running_simulation = False
+                    courier.moving = False
+    
+    pygame.quit()
 
 game_loop()
