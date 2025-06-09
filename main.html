@@ -1,0 +1,276 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Smart Courier Simulation</title>
+  <style>
+    canvas { border: 1px solid black; display: block; margin: auto; }
+    #controls { text-align: center; margin: 20px; }
+    button, label.button {
+      margin: 5px; padding: 10px 20px;
+      font-size: 16px; background-color: #4CAF50;
+      color: white; border: none; border-radius: 5px;
+      cursor: pointer; display: inline-block;
+    }
+    label.button:hover, button:hover {
+      background-color: #45a049;
+    }
+    input[type="file"] {
+      display: none;
+    }
+  </style>
+</head>
+<body>
+  <div id="controls">
+    <label for="mapInput" class="button">Load Map</label>
+    <input type="file" id="mapInput" accept="image/*" />
+    <button onclick="randomize()">Acak</button>
+    <button onclick="start()">Start</button>
+    <button onclick="stop()">Stop</button>
+  </div>
+  <canvas id="canvas" width="1200" height="800"></canvas>
+
+  <script>
+    const canvas = document.getElementById('canvas');
+    const ctx = canvas.getContext('2d');
+    const CELL_SIZE = 8;
+    const WIDTH = canvas.width, HEIGHT = canvas.height;
+
+    let imageLoaded = false;
+    let mapImage = null, imageData = null, grayGrid = [];
+
+    let origin = [0, 0];
+    let pickup = [0, 0];
+    let delivery = [0, 0];
+
+    let courier = { x: 0, y: 0, path: [], targetIndex: 0, speed: 1.5 };
+    let running = false;
+    let hasPickedUp = false;
+
+
+    function isGray(r, g, b) {
+      return r >= 90 && r <= 150 && g >= 90 && g <= 150 && b >= 90 && b <= 150;
+    }
+
+    function loadImageToCanvas(file) {
+      const reader = new FileReader();
+      const img = new Image();
+      reader.onload = () => {
+        img.onload = () => {
+          ctx.clearRect(0, 0, WIDTH, HEIGHT);
+          ctx.drawImage(img, 0, 0, WIDTH, HEIGHT);
+          imageData = ctx.getImageData(0, 0, WIDTH, HEIGHT);
+          buildGrid();
+          imageLoaded = true;
+          mapImage = img;
+        };
+        img.src = reader.result;
+      };
+      reader.readAsDataURL(file);
+    }
+
+    function buildGrid() {
+      grayGrid = [];
+      for (let y = 0; y < HEIGHT; y += CELL_SIZE) {
+        const row = [];
+        for (let x = 0; x < WIDTH; x += CELL_SIZE) {
+          const index = (y * WIDTH + x) * 4;
+          const [r, g, b] = imageData.data.slice(index, index + 3);
+          row.push(isGray(r, g, b));
+        }
+        grayGrid.push(row);
+      }
+    }
+
+    function getRandomGray() {
+      for (let i = 0; i < 1000; i++) {
+        let x = Math.floor(Math.random() * (WIDTH - 200)) + 100;
+        let y = Math.floor(Math.random() * (HEIGHT - 200)) + 100;
+        let gx = Math.floor(x / CELL_SIZE);
+        let gy = Math.floor(y / CELL_SIZE);
+        if (grayGrid[gy]?.[gx]) {
+          return [gx * CELL_SIZE + CELL_SIZE / 2, gy * CELL_SIZE + CELL_SIZE / 2];
+        }
+      }
+      return [WIDTH / 2, HEIGHT / 2];
+    }
+
+    function heuristic(a, b) {
+      return Math.hypot(a[0] - b[0], a[1] - b[1]);
+    }
+
+    function aStar(start, goal) {
+      const s = [Math.floor(start[1] / CELL_SIZE), Math.floor(start[0] / CELL_SIZE)];
+      const g = [Math.floor(goal[1] / CELL_SIZE), Math.floor(goal[0] / CELL_SIZE)];
+      const rows = grayGrid.length, cols = grayGrid[0].length;
+
+      const openSet = [[0, s]];
+      const cameFrom = {};
+      const gScore = {};
+      const fScore = {};
+      const serialize = p => p.join(',');
+      const deserialize = str => str.split(',').map(Number);
+
+      gScore[serialize(s)] = 0;
+      fScore[serialize(s)] = heuristic(s, g);
+
+      while (openSet.length > 0) {
+        openSet.sort((a, b) => a[0] - b[0]);
+        const current = openSet.shift()[1];
+        if (serialize(current) === serialize(g)) {
+          const path = [];
+          let cur = current;
+          while (serialize(cur) in cameFrom) {
+            path.push([cur[1] * CELL_SIZE + CELL_SIZE / 2, cur[0] * CELL_SIZE + CELL_SIZE / 2]);
+            cur = cameFrom[serialize(cur)];
+          }
+          path.push([s[1] * CELL_SIZE + CELL_SIZE / 2, s[0] * CELL_SIZE + CELL_SIZE / 2]);
+          return path.reverse();
+        }
+
+        for (const [dy, dx] of [
+          [-1,  0], [1,  0], [0, -1], [0,  1],   // atas, bawah, kiri, kanan
+          [-1, -1], [-1, 1], [1, -1], [1,  1]    // diagonal: kiri atas, kanan atas, kiri bawah, kanan bawah
+        ]) {
+          const ny = current[0] + dy, nx = current[1] + dx;
+          if (ny >= 0 && ny < rows && nx >= 0 && nx < cols && grayGrid[ny][nx]) {
+            const neighbor = [ny, nx];
+            const neighborKey = serialize(neighbor);
+            const currentKey = serialize(current);
+            const tentative_g = (gScore[currentKey] ?? Infinity) + Math.hypot(dx, dy);
+            if (tentative_g < (gScore[neighborKey] ?? Infinity)) {
+              cameFrom[neighborKey] = current;
+              gScore[neighborKey] = tentative_g;
+              fScore[neighborKey] = tentative_g + heuristic(neighbor, g);
+              if (!openSet.some(([_, p]) => serialize(p) === neighborKey)) {
+                openSet.push([fScore[neighborKey], neighbor]);
+              }
+            }
+          }
+        }
+      }
+      return [];
+    }
+
+    function angleDifference(a, b) {
+      let diff = b - a;
+      while (diff < -Math.PI) diff += 2 * Math.PI;
+      while (diff > Math.PI) diff -= 2 * Math.PI;
+      return diff;
+    }
+
+    function drawCourier() {
+      const path = courier.path;
+        if (courier.targetIndex >= path.length) return;
+
+        const [tx, ty] = path[courier.targetIndex];
+        const dx = tx - courier.x;
+        const dy = ty - courier.y;
+        const dist = Math.hypot(dx, dy);
+
+        if (dist < courier.speed) {
+          courier.x = tx;
+          courier.y = ty;
+          courier.targetIndex++;
+          if (!hasPickedUp && Math.hypot(courier.x - pickup[0], courier.y - pickup[1]) < 10) {
+            hasPickedUp = true;
+            courier.path = aStar([courier.x, courier.y], delivery);
+            courier.targetIndex = 0;
+          }
+        } else {
+          courier.x += (dx / dist) * courier.speed;
+          courier.y += (dy / dist) * courier.speed;
+        }
+
+        // Sudut & gambar tetap dijalankan setelah update posisi
+        const targetAngle = Math.atan2(dy, dx);
+        const diff = angleDifference(courier.angle, targetAngle);
+        courier.angle += diff * 0.2;
+
+        ctx.save();
+        ctx.translate(courier.x, courier.y);
+        ctx.rotate(courier.angle);
+        ctx.fillStyle = 'black';
+        ctx.beginPath();
+        ctx.moveTo(15, 0);
+        ctx.lineTo(-10, -10);
+        ctx.lineTo(-10, 10);
+        ctx.closePath();
+        ctx.fill();
+        ctx.restore();
+    }
+
+    function drawScene() {
+      if (mapImage) ctx.drawImage(mapImage, 0, 0, WIDTH, HEIGHT);
+
+      ctx.fillStyle = 'blue';
+      ctx.beginPath();
+      ctx.arc(origin[0], origin[1], 8, 0, Math.PI * 2);
+      ctx.fill();
+
+      if (!hasPickedUp) {
+        ctx.fillStyle = 'yellow';
+        ctx.beginPath();
+        ctx.arc(pickup[0], pickup[1], 10, 0, Math.PI * 2);
+        ctx.fill();
+      } else {
+        ctx.fillStyle = 'yellow';
+        ctx.beginPath();
+        ctx.arc(courier.x + 15, courier.y, 10, 0, Math.PI * 2);
+        ctx.fill();
+      }
+
+      ctx.fillStyle = 'red';
+      ctx.beginPath();
+      ctx.arc(delivery[0], delivery[1], 10, 0, Math.PI * 2);
+      ctx.fill();
+
+      drawCourier();
+    }
+
+    function loop() {
+      ctx.clearRect(0, 0, WIDTH, HEIGHT);
+      drawScene();
+      if (running) requestAnimationFrame(loop);
+    }
+
+    function randomize() {
+      if (!imageLoaded) return;
+
+      origin = getRandomGray();
+      pickup = getRandomGray();
+      delivery = getRandomGray();
+      hasPickedUp = false;
+
+      courier = {
+        x: origin[0],
+        y: origin[1],
+        path: aStar(origin, pickup),
+        targetIndex: 0,
+        speed: 3.0,
+        angle : 0
+      };
+
+      running = false;
+      ctx.clearRect(0, 0, WIDTH, HEIGHT);
+      drawScene();
+    }
+
+    function start() {
+      if (!imageLoaded) return;
+      if (courier.path.length === 0) return;
+
+      running = true;
+      loop();
+    }
+
+    function stop() {
+      running = false;
+    }
+
+    document.getElementById('mapInput').addEventListener('change', e => {
+      if (e.target.files[0]) loadImageToCanvas(e.target.files[0]);
+    });
+  </script>
+</body>
+</html>
