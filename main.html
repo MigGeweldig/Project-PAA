@@ -33,7 +33,7 @@
   <script>
     const canvas = document.getElementById('canvas');
     const ctx = canvas.getContext('2d');
-    const CELL_SIZE = 8;
+    const CELL_SIZE = 4;
     const WIDTH = canvas.width, HEIGHT = canvas.height;
 
     let imageLoaded = false;
@@ -96,60 +96,78 @@
     }
 
     function heuristic(a, b) {
-      return Math.hypot(a[0] - b[0], a[1] - b[1]);
+    const dx = a[1] - b[1];
+    const dy = a[0] - b[0];
+    return Math.hypot(dx, dy); 
     }
 
+
     function aStar(start, goal) {
-      const s = [Math.floor(start[1] / CELL_SIZE), Math.floor(start[0] / CELL_SIZE)];
-      const g = [Math.floor(goal[1] / CELL_SIZE), Math.floor(goal[0] / CELL_SIZE)];
-      const rows = grayGrid.length, cols = grayGrid[0].length;
+        const s = [Math.floor(start[1] / CELL_SIZE), Math.floor(start[0] / CELL_SIZE)];
+        const g = [Math.floor(goal[1] / CELL_SIZE), Math.floor(goal[0] / CELL_SIZE)];
+        const rows = grayGrid.length, cols = grayGrid[0].length;
 
-      const openSet = [[0, s]];
-      const cameFrom = {};
-      const gScore = {};
-      const fScore = {};
-      const serialize = p => p.join(',');
-      const deserialize = str => str.split(',').map(Number);
+        const openSet = [[0, s]];
+        const cameFrom = {};
+        const gScore = {};
+        const fScore = {};
+        const serialize = p => p.join(',');
+        const deserialize = str => str.split(',').map(Number);
 
-      gScore[serialize(s)] = 0;
-      fScore[serialize(s)] = heuristic(s, g);
+        gScore[serialize(s)] = 0;
+        fScore[serialize(s)] = heuristic(s, g);
 
-      while (openSet.length > 0) {
-        openSet.sort((a, b) => a[0] - b[0]);
-        const current = openSet.shift()[1];
-        if (serialize(current) === serialize(g)) {
-          const path = [];
-          let cur = current;
-          while (serialize(cur) in cameFrom) {
-            path.push([cur[1] * CELL_SIZE + CELL_SIZE / 2, cur[0] * CELL_SIZE + CELL_SIZE / 2]);
-            cur = cameFrom[serialize(cur)];
-          }
-          path.push([s[1] * CELL_SIZE + CELL_SIZE / 2, s[0] * CELL_SIZE + CELL_SIZE / 2]);
-          return path.reverse();
-        }
+        const directions = [
+            [-1, 0], [1, 0], [0, -1], [0, 1],       // utama
+            [-1, -1], [-1, 1], [1, -1], [1, 1],     // diagonal
+            [-2, 0], [2, 0], [0, -2], [0, 2],       // dua langkah arah utama
+            [-2, -1], [-2, 1], [2, -1], [2, 1],     // campuran panjang
+            [-1, -2], [-1, 2], [1, -2], [1, 2]      // campuran panjang
+        ];
 
-        for (const [dy, dx] of [
-          [-1,  0], [1,  0], [0, -1], [0,  1],   // atas, bawah, kiri, kanan
-          [-1, -1], [-1, 1], [1, -1], [1,  1]    // diagonal: kiri atas, kanan atas, kiri bawah, kanan bawah
-        ]) {
-          const ny = current[0] + dy, nx = current[1] + dx;
-          if (ny >= 0 && ny < rows && nx >= 0 && nx < cols && grayGrid[ny][nx]) {
-            const neighbor = [ny, nx];
-            const neighborKey = serialize(neighbor);
-            const currentKey = serialize(current);
-            const tentative_g = (gScore[currentKey] ?? Infinity) + Math.hypot(dx, dy);
-            if (tentative_g < (gScore[neighborKey] ?? Infinity)) {
-              cameFrom[neighborKey] = current;
-              gScore[neighborKey] = tentative_g;
-              fScore[neighborKey] = tentative_g + heuristic(neighbor, g);
-              if (!openSet.some(([_, p]) => serialize(p) === neighborKey)) {
-                openSet.push([fScore[neighborKey], neighbor]);
-              }
+
+        while (openSet.length > 0) {
+            openSet.sort((a, b) => a[0] - b[0]);
+            const current = openSet.shift()[1];
+            if (serialize(current) === serialize(g)) {
+            const path = [];
+            let cur = current;
+            while (serialize(cur) in cameFrom) {
+                path.push([cur[1] * CELL_SIZE + CELL_SIZE / 2, cur[0] * CELL_SIZE + CELL_SIZE / 2]);
+                cur = cameFrom[serialize(cur)];
             }
-          }
+            path.push([s[1] * CELL_SIZE + CELL_SIZE / 2, s[0] * CELL_SIZE + CELL_SIZE / 2]);
+            return path.reverse();
+            }
+
+            for (const [dy, dx] of directions) {
+            const ny = current[0] + dy;
+            const nx = current[1] + dx;
+            if (ny >= 0 && ny < rows && nx >= 0 && nx < cols && grayGrid[ny][nx]) {
+                // Cegah diagonal corner cutting
+                if (Math.abs(dx) === 1 && Math.abs(dy) === 1) {
+                    if (!grayGrid[current[0]][nx] || !grayGrid[ny][current[1]]) continue;
+                }
+
+
+                const neighbor = [ny, nx];
+                const neighborKey = serialize(neighbor);
+                const currentKey = serialize(current);
+                const cost = Math.hypot(dx, dy);
+                const tentative_g = (gScore[currentKey] ?? Infinity) + cost;
+
+                if (tentative_g < (gScore[neighborKey] ?? Infinity)) {
+                cameFrom[neighborKey] = current;
+                gScore[neighborKey] = tentative_g;
+                fScore[neighborKey] = tentative_g + heuristic(neighbor, g);
+                if (!openSet.some(([_, p]) => serialize(p) === neighborKey)) {
+                    openSet.push([fScore[neighborKey], neighbor]);
+                }
+                }
+            }
+            }
         }
-      }
-      return [];
+        return [];
     }
 
     function angleDifference(a, b) {
@@ -240,6 +258,7 @@
       origin = getRandomGray();
       pickup = getRandomGray();
       delivery = getRandomGray();
+      
       hasPickedUp = false;
 
       courier = {
@@ -247,7 +266,7 @@
         y: origin[1],
         path: aStar(origin, pickup),
         targetIndex: 0,
-        speed: 3.0,
+        speed: 2.5 ,
         angle : 0
       };
 
